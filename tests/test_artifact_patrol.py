@@ -33,7 +33,7 @@ def replace_signal(path, name, values):
 
 
 class PatrolTests(unittest.TestCase):
-    def test_known_flat_rail_jump_and_line_are_candidates_not_source_edits(self):
+    def test_flat_and_optional_rail_step_are_reviewed_but_line_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "data.bdf"
             expected = fixture(path)
@@ -51,12 +51,14 @@ class PatrolTests(unittest.TestCase):
             replace_signal(path, "T1", x)
             mapping = montage_mapping(["O1", "O2", "T1", "Status", "PG1"])
             before = hashlib.sha256(path.read_bytes()).hexdigest()
-            result = scan_record(path, mapping)
+            result = scan_record(path, mapping, enabled_checks=['flat','saturation','step'])
             reasons = {(c["channel"], c["reason"]) for c in result["candidates"]}
             self.assertIn(("O2", "平线"), reasons)
             self.assertIn(("T1", "数字边界/饱和候选"), reasons)
-            self.assertIn(("T1", "瞬时跳变候选"), reasons)
-            self.assertIn(("O1", "50Hz强工频候选"), reasons)
+            self.assertIn(("T1", "持续电位阶跃候选"), reasons)
+            self.assertNotIn(("O1", "50Hz强工频候选"), reasons)
+            self.assertTrue(all(c['draft_eligible'] for c in result['candidates']))
+            self.assertTrue(all(not c['whole_channel'] for c in result['candidates'] if c['reason'] != '平线'))
             flat = [
                 c for c in result["candidates"] if c["channel"] == "O2" and c["reason"] == "平线"
             ]

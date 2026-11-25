@@ -118,6 +118,7 @@ class Handler(BaseHTTPRequestHandler):
             ),
             "/assets/eeg_app.js": ("eeg_app.js", "application/javascript; charset=utf-8"),
         }
+        assets["/assets/eeg_hrv.js"] = ("eeg_hrv.js","application/javascript; charset=utf-8")
         if parsed.path in assets:
             name, mime = assets[parsed.path]
             body = (WEB_FILE.parent / name).read_bytes()

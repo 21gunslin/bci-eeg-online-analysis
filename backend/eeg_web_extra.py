@@ -83,6 +83,15 @@ def upload_path(root, token, suffix=".bdf"):
 def handle_extra(handler, root):
     """扩展接口分发。先看请求路径，再找到对应分析函数；不要在这里写特征公式。"""
     parsed = urlparse(handler.path)
+    if parsed.path == "/api/pair-contrast":
+        from eeg_pair_contrast import handle_contrast
+
+        handle_contrast(handler, root)
+        return True
+    if parsed.path == "/api/hrv":
+        from eeg_hrv_web import handle_hrv
+        handle_hrv(handler, root)
+        return True
     if parsed.path.startswith("/api/raw-qc"):
         from eeg_raw_qc_api import handle_raw_qc
 

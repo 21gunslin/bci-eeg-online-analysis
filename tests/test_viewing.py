@@ -60,7 +60,7 @@ class ViewingTests(unittest.TestCase):
             run = root / "raw_view_test"
             run.mkdir()
             path = run / "source.bdf"
-            fixture(path)
+            fixture(path, flat_o1_seconds=4)
             fif = run / "existing_raw.fif"
             fif.write_bytes(b"preserved FIF sentinel")
             mapping = montage_mapping(["O1", "O2", "T1", "Status", "PG1"])
@@ -132,7 +132,8 @@ class ViewingTests(unittest.TestCase):
                         "/api/raw-qc/patrol",
                         {"run_id": "raw_view_test", "seconds": 2, "sensitivity": 6, "scope": "eeg"},
                     )
-                    self.assertTrue(scan["candidates"])
+                    self.assertTrue(any(c["channel"] == "O1" and c["reason"] == "平线"
+                                        for c in scan["candidates"]))
                     self.assertEqual(scan["review"]["entries"], [])
                     reviewed = post(
                         "/api/raw-qc/review",

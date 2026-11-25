@@ -12,6 +12,29 @@
     highlighting = false,
     activeCandidate = null;
   const M = EEGPatrolMath;
+  let reportWindowKey = '';
+  function updateReportWindow(wave, channel) {
+    const key = wave && channel ? JSON.stringify([record?.run_id, channel, wave.start, wave.stop]) : '';
+    if (key !== reportWindowKey) {
+      $('qcReportDecision').value = 'pending';
+      $('qcReportNote').value = '';
+      $('qcReportLinks').replaceChildren();
+      $('qcReportStatus').textContent = '';
+      reportWindowKey = key;
+    }
+    $('qcReportWindow').textContent = key
+      ? `${channel} · ${fmt(wave.start)}–${fmt(wave.stop)} 秒`
+      : '在波形区选择单个通道和时间窗。';
+    $('qcReportExport').disabled = !key;
+    $('qcReportExport').dataset.ready = key ? 'true' : 'false';
+  }
+  function enabledChecks() {
+    return [['flat', 'patrolCheckFlat'], ['saturation', 'patrolCheckSaturation'],
+      ['step', 'patrolCheckStep']].filter(([, id]) => $(id).checked).map(([name]) => name);
+  }
+  function syncStepControls() {
+    for (const id of ['patrolZ', 'patrolStepMin']) $(id).disabled = !$('patrolCheckStep').checked;
+  }
   function stop() {
     playing = false;
     clearTimeout(timer);
@@ -45,6 +68,7 @@
     current = { start: wave.start, end: wave.stop, channels: rows.map((r) => r.name) };
     const single = $('rawWaveFocus').value,
       p = M.pages(wave.rows, size(), page);
+    updateReportWindow(wave, single);
     $('patrolPageInfo').textContent = single
       ? `单通道 ${single} · ${fmt(wave.start)}–${fmt(wave.stop)}秒`
       : `通道第${p.page + 1}/${p.count}页 · 当前${rows.map((r) => r.name).join('、')} · ${fmt(wave.start)}–${fmt(wave.stop)}秒`;
@@ -57,6 +81,7 @@
     highlighting = false;
     activeCandidate = null;
     record = value;
+    updateReportWindow(null, '');
     scan = null;
     entries = [];
     page = 0;
@@ -161,12 +186,12 @@
       const row = el('div', undefined, 'patrol-candidate' + (highlighting ? ' candidate-red' : ''));
       const text = el(
         'div',
-        `${begin + i + 1}. ${c.channel} · ${c.reason}${c.persistent ? '（持续性通道提示）' : ''}`,
+        `${begin + i + 1}. ${c.channel} · ${c.reason}${c.whole_channel ? ' · 整道排除候选' : ' · 只标坏段，保留通道'}`,
       );
       text.append(
         el(
           'p',
-          `${fmt(c.start)}–${fmt(c.end)}秒；触发${(c.fraction * 100).toFixed(0)}%窗口${c.persistent ? '，包络内仍可能有间隙' : ''}`,
+          `${fmt(c.start)}–${fmt(c.end)}秒；触发${(c.fraction * 100).toFixed(0)}%窗口${c.segments?.length > 1 ? `，按${c.segments.length}个实际区间标记，正常间隙保留` : ''}`,
           'muted small',
         ),
       );
@@ -203,6 +228,8 @@
   async function scanAll() {
     if (!record) throw new Error('请先载入或恢复一份BDF。');
     stop();
+    const checks = enabledChecks();
+    if (!checks.length) throw new Error('请至少勾选一项检查；建议先只查平线。');
     const id = record.run_id;
     status('patrolStatus', '正在扫描全记录原始数据，生成候选定位；不滤波、不删数据…');
     const r = await post('/api/raw-qc/patrol', {
@@ -210,8 +237,16 @@
       seconds: Number($('patrolBin').value),
       sensitivity: Number($('patrolZ').value),
       scope: $('patrolScope').value,
+      enabled_checks: checks,
+      step_min_uv: Number($('patrolStepMin').value),
     });
     if (record?.run_id !== id) return;
+    if (r.seconds !== Number($('patrolBin').value) ||
+        r.scope !== $('patrolScope').value ||
+        r.sensitivity !== Number($('patrolZ').value) ||
+        r.step_min_uv !== Number($('patrolStepMin').value) ||
+        JSON.stringify(r.enabled_checks) !== JSON.stringify(enabledChecks()))
+      throw new Error('扫描期间参数已更改，已忽略旧响应；请重新点击黄色按钮。');
     scan = r;
     $('patrolFillDraft').dataset.ready = 'true';
     activeCandidate = null;
@@ -244,13 +279,15 @@
       if (
         scan.seconds !== Number($('patrolBin').value) ||
         scan.sensitivity !== Number($('patrolZ').value) ||
-        scan.scope !== $('patrolScope').value
+        scan.scope !== $('patrolScope').value ||
+        JSON.stringify(scan.enabled_checks) !== JSON.stringify(enabledChecks()) ||
+        scan.step_min_uv !== Number($('patrolStepMin').value)
       )
         throw new Error('扫描参数已更改，请重新点击黄色按钮后再填入。');
       const draft = M.buildDraft(scan, $('rawQcBads').value, $('rawQcBadSegments').value);
       if (new TextEncoder().encode(JSON.stringify(draft)).length > 50000)
         throw new Error('候选草稿过多，请提高扫描阈值或缩小扫描范围后重试；现有内容未更改。');
-      const message = `已追加${draft.addedBads}个坏道候选、${draft.addedSegments}条坏段候选，原手工内容保留；可直接删除或补充。${draft.allEegBad ? '注意：当前全部EEG均列为坏道，请先删改核对，否则无法分析。' : ''}坏段导出会作用于全部通道；尚未导出FIF。`;
+      const message = `已建议整道排除${draft.addedBads}个全程平线通道，追加${draft.addedSegments}条坏段标记；局部问题不升级为坏道，波形保留。${draft.skippedCandidates ? `忽略${draft.skippedCandidates}项不参与规则的提示。` : ''}原手工内容保留，可增删。${draft.allEegBad ? '当前全部EEG均列为整道坏道，请先核对。' : ''}请应用标记保存FIF；后续选择FIF分析会忽略整道坏道及坏段覆盖的时间窗，其他时段仍可用。`;
       EEGRawViewer.applyDraft(draft, message);
       return message;
     });
@@ -415,6 +452,35 @@
       $('patrolResults').classList.remove('hide');
       return '人工复核进度已导出，不是无伪迹证明，也未转换为BAD标记。';
     });
+  $('qcReportExport').onclick = () =>
+    run('qcReportStatus', async () => {
+      const wave = EEGRawViewer.getWave();
+      const channel = $('rawWaveFocus').value;
+      if (!record || !wave || !channel) throw new Error('请先选择单个通道并加载波形。');
+      const key = reportWindowKey;
+      const decision = $('qcReportDecision').value;
+      const note = $('qcReportNote').value.trim();
+      if (decision !== 'pending' && !note) throw new Error('请填写判断依据。');
+      const response = await post('/api/raw-qc/report', {
+        run_id: record.run_id,
+        channel,
+        start: wave.start,
+        end: wave.stop,
+        decision,
+        note,
+        draft: EEGRawViewer.getDraftOptions(),
+      });
+      if (key !== reportWindowKey) return '报告已生成，当前查看窗已切换。';
+      $('qcReportLinks').replaceChildren(...response.files.map((file) => {
+        const row = el('p');
+        const link = el('a', file.name);
+        link.href = file.url;
+        link.download = file.name;
+        row.append(link);
+        return row;
+      }));
+      return '报告已生成，可下载 HTML 报告和独立 PNG 图。';
+    });
   function paintChannels() {
     const names = new Set(highlighting ? (scan?.candidates || []).map((c) => c.channel) : []);
     for (const row of document.querySelectorAll('.raw-channel')) {
@@ -472,6 +538,26 @@
     if (window.EEGSpectrum) EEGSpectrum.redraw();
     status('patrolStatus', '已清除程序候选红标，人工BAD标记和原数据不变。');
   };
+  // 更改规则后立即撤下旧红标，避免把上一轮更严格的结果误认为新规则结果。
+  for (const id of ['patrolCheckFlat', 'patrolCheckSaturation', 'patrolCheckStep',
+    'patrolStepMin', 'patrolBin', 'patrolZ', 'patrolScope']) {
+    $(id).addEventListener('change', () => {
+      stop();
+      syncStepControls();
+      scan = null;
+      highlighting = false;
+      activeCandidate = null;
+      $('patrolFillDraft').dataset.ready = 'false';
+      $('patrolFillDraft').disabled = true;
+      $('patrolResults').classList.add('hide');
+      paintChannels();
+      EEGRawViewer.redraw();
+      if (window.EEGSpectrum) EEGSpectrum.redraw();
+      status('patrolStatus', '检查项目已更改，旧候选已撤下；请重新点击黄色按钮。已有人工标记保留。');
+    });
+  }
+  syncStepControls();
+  updateReportWindow(null, '');
   window.EEGPatrol = { setRecord, restoreReview, visibleRows, afterDraw, pause: stop, overlay };
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stop();

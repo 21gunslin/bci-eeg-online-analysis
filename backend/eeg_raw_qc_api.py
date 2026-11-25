@@ -57,11 +57,21 @@ def handle_raw_qc(handler, root, route):
         "/api/raw-qc/view",
         "/api/raw-qc/open",
         "/api/raw-qc/psd",
+        "/api/raw-qc/report",
     ):
         return False
     from eeg_web_extra import read_json, public_files, new_run, upload_path
 
     opts = read_json(handler)
+    if route == "/api/raw-qc/report":
+        from eeg_qc_report import build_report
+        from eeg_raw_bdf import NativeBDF
+
+        run = raw_run(root, opts.get("run_id"))
+        run_id, output = new_run(root)
+        files = build_report(NativeBDF(run / "source.bdf"), run, output, opts)
+        handler.send_json(200, {"files": public_files(files, run_id)})
+        return True
     if route == "/api/raw-qc/psd":
         from eeg_view_spectrum import inspect_spectrum, export_spectrum
 

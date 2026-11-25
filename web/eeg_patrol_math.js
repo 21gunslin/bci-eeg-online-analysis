@@ -53,33 +53,37 @@
       addedNames = [],
       groups = new Map(),
       allowed = new Set(scan.channels.map((c) => c.name));
+    let skippedCandidates = 0;
     for (const c of scan.candidates) {
+      // 工频和旧幅度规则仍不参与；主动勾选的饱和/阶跃只能转为局部注释。
+      if (!['平线', '数字边界/饱和候选', '持续电位阶跃候选'].includes(c.reason) || c.draft_eligible === false) {
+        skippedCandidates++;
+        continue;
+      }
       if (!allowed.has(c.channel) || /[,，\r\n]/.test(c.channel))
         throw new Error('候选通道名不能快速填入，请核对通道名。');
-      if (c.persistent) {
+      const spans = Array.isArray(c.segments) ? c.segments : [{ start: c.start, end: c.end }];
+      const wholeChannel = c.reason === '平线' && c.whole_channel === true &&
+        c.fraction === 1 && spans.length === 1 && spans[0].start === 0 && spans[0].end === scan.duration;
+      if (wholeChannel) {
         if (!names.has(c.channel)) {
           names.add(c.channel);
           addedNames.push(c.channel);
         }
         continue;
       }
-      if (
-        !Number.isFinite(c.start) ||
-        !Number.isFinite(c.end) ||
-        c.start < 0 ||
-        c.end > scan.duration ||
-        c.start >= c.end
-      )
-        throw new Error('候选时间无效，请重新扫描。');
-      const key = c.start + '|' + c.end;
-      if (!groups.has(key)) groups.set(key, { start: c.start, end: c.end, labels: new Set() });
-      groups.get(key).labels.add(
-        c.channel +
-          ':' +
-          String(c.reason)
-            .replace(/[,，\r\n]/g, '；')
-            .slice(0, 120),
-      );
+      // 旧版的persistent候选只有包络，缺少正常间隙信息，必须重扫。
+      if (c.persistent && !Array.isArray(c.segments))
+        throw new Error('旧扫描缺少局部区间，请重新点击黄色按钮，避免把正常间隙标为坏段。');
+      if (!spans.length) throw new Error('候选区间为空，请重新扫描。');
+      for (const span of spans) {
+        if (!Number.isFinite(span.start) || !Number.isFinite(span.end) ||
+            span.start < 0 || span.end > scan.duration || span.start >= span.end)
+          throw new Error('候选时间无效，请重新扫描。');
+        const key = span.start + '|' + span.end;
+        if (!groups.has(key)) groups.set(key, { start: span.start, end: span.end, labels: new Set() });
+        groups.get(key).labels.add(c.channel + ':' + String(c.reason).replace(/[,，\r\n]/g, '；').slice(0,120));
+      }
     }
     const existing = segmentsText
       .split('\n')
@@ -113,6 +117,7 @@
       badsText: append(badsText, addedNames, ', '),
       segmentsText: nextSegments,
       addedBads: addedNames.length,
+      skippedCandidates,
       addedSegments: rows.length,
       totalBads: names.size,
       allEegBad:

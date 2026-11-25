@@ -15,7 +15,7 @@ from eeg_raw_bdf import NativeBDF, waveform
 from eeg_raw_qc import analyze_raw, alpha_peak, spectrum, condition_spectrum, validate_intervals
 
 
-def fixture(path, seconds=12):
+def fixture(path, seconds=12, flat_o1_seconds=0):
     specs = [
         ("O1", 256, "uV"),
         ("O2", 256, "uV"),
@@ -64,7 +64,9 @@ def fixture(path, seconds=12):
                 payload.append(tal.ljust(fs * 3, b"\0"))
                 continue
             t = record + np.arange(fs) / fs
-            if name in ("O1", "O2"):
+            if name == "O1" and record < flat_o1_seconds:
+                values = np.zeros(fs, dtype="i4")
+            elif name in ("O1", "O2"):
                 values = np.round(
                     (8 if record < 6 else 35) * np.sin(2 * np.pi * 10 * t)
                     + 12 * np.sin(2 * np.pi * 50 * t)

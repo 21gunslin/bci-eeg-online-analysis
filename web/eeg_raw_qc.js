@@ -211,7 +211,7 @@
     };
     ctx.fillStyle = '#36536e';
     ctx.font = '12px sans-serif';
-    ctx.fillText(titles[mode] + ' | 只调坐标，原始值不变', 8, 21);
+    ctx.fillText(titles[mode] + ' | 粉色底为坏段标记，原始波形保留', 8, 21);
     const bads = new Set(badNames());
     let badSpans = (active?.annotations || [])
       .filter((a) => a['来源'] === 'BDF' && a['标签'].toLowerCase().startsWith('bad'))
@@ -823,6 +823,7 @@
   window.EEGRawViewer = {
     getRecord: () => active,
     getWave: () => lastWave,
+    getDraftOptions: options,
     getVisibleRows: viewRows,
     applyDraft,
     redraw: () => {

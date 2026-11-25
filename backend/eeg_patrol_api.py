@@ -15,7 +15,7 @@ def handle_patrol(handler, root, route):
     from eeg_web_extra import read_json, public_files, new_run
     from eeg_raw_qc_api import raw_run
     from eeg_raw_bdf import NativeBDF
-    from eeg_artifact_patrol import scan_record, export_scan, review_state, VERSION
+    from eeg_artifact_patrol import scan_record, export_scan, review_state, normalize_checks, VERSION
 
     opts = read_json(handler)
     run = raw_run(root, opts.get("run_id"))
@@ -48,6 +48,8 @@ def handle_patrol(handler, root, route):
         "seconds": float(opts.get("seconds", 2)),
         "sensitivity": float(opts.get("sensitivity", 6)),
         "scope": opts.get("scope", "eeg"),
+        "enabled_checks": normalize_checks(opts.get("enabled_checks")),
+        "step_min_uv": float(opts.get("step_min_uv", 100)),
     }
     signature = {
         "version": VERSION,

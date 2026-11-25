@@ -58,6 +58,7 @@
         ><button type="button" role="tab" data-tab="spike" aria-selected="false">
           spike 独立分析
         </button>
+        <button type="button" role="tab" data-tab="hrv" aria-selected="false">心电 HRV</button>
       </nav>
 
       <section id="single" class="tab-panel" role="tabpanel">
@@ -308,12 +309,22 @@
             </fieldset>
             <div class="two-col">
               <div>
+                <label for="pairFolderA">镇痛前 记录文件夹</label>
+                <input id="pairFolderA" type="file" webkitdirectory multiple />
+                <span id="pairSourceA" class="muted small"></span>
+                <label for="pairPartA" hidden>常规图表使用的分段</label>
+                <select id="pairPartA" aria-label="镇痛前 常规对比分段" hidden></select>
                 <label for="pairFileA">A：镇痛前 EEG</label
                 ><input id="pairFileA" type="file" accept=".bdf" required /><label for="pairLabelA"
                   >记录 A 标签</label
                 ><input id="pairLabelA" type="text" value="镇痛前" maxlength="30" required />
               </div>
               <div>
+                <label for="pairFolderB">镇痛后 记录文件夹</label>
+                <input id="pairFolderB" type="file" webkitdirectory multiple />
+                <span id="pairSourceB" class="muted small"></span>
+                <label for="pairPartB" hidden>常规图表使用的分段</label>
+                <select id="pairPartB" aria-label="镇痛后 常规对比分段" hidden></select>
                 <label for="pairFileB">B：镇痛后 EEG</label
                 ><input id="pairFileB" type="file" accept=".bdf" required /><label for="pairLabelB"
                   >记录 B 标签</label
@@ -394,6 +405,13 @@
               </div>
             </div>
             <button class="primary run" type="submit">分析两份文件并对比</button>
+            <section>
+              <h3>导出事件与背景的相对功率差</h3>
+              <p class="muted">选择镇痛前、后各一次记录的文件夹，可读取数字子目录中的全部同格式分段及配套 evt.bdf。常规图表使用下拉选中的一段，事件对照使用两侧所有已导入分段。手动选 EEG 时，该侧仅分析所选文件。</p>
+              <p class="muted small">固定 250 Hz、2 秒窗，沿用上方陷波和已启用的事件校正。每侧最多取 20 个最靠近 KeyIn:253 的窗，匹配同段背景。至少 10 对及 3 个共同候选电极才输出数值；缺失留空。</p>
+              <button type="button" class="secondary run" id="pairContrast">计算并导出 α / δ 对比数据</button>
+              <div class="status" id="contrastStatus" role="status"></div>
+            </section>
             <div id="pairStatus" class="status" role="status"></div>
           </form>
         </div>
@@ -409,7 +427,7 @@
             直接复用这两份记录的本机缓存，无需重新上传。网络与汇总特征始终使用全部共同通道。
           </p>
         </div>
-        <div id="pairResult" class="result hide"></div>
+        <div id="contrastResult" class="result hide"></div><div id="pairResult" class="result hide"></div>
       </section>
 
       <section id="spike" class="tab-panel hide" role="tabpanel">
@@ -515,6 +533,24 @@
         </div>
         <div id="spikeResult" class="result hide"></div>
       </section>
+      <section id="hrv" class="tab-panel hide" role="tabpanel">
+        <div class="card">
+          <h2>镇痛前五分钟心率变异性</h2>
+          <p class="muted">复现研究时，请选一位产妇的一次镇痛前记录。网站从数字子目录读取 data.bdf，按采集时钟选取最早连续通过初筛的五分钟。单个文件也可单独核验。</p>
+          <form id="hrvForm">
+            <div class="grid settings">
+              <div><label for="hrvFolder">镇痛前记录文件夹</label><input id="hrvFolder" type="file" webkitdirectory multiple /></div>
+              <div><label for="hrvSingle">或选择单个 data.bdf</label><input id="hrvSingle" type="file" accept=".bdf" /></div>
+            </div>
+            <label for="hrvEvt">同场次 evt.bdf（可选，选文件夹时自动匹配）</label>
+            <input id="hrvEvt" type="file" accept=".bdf" />
+            <p class="muted" id="hrvSelection"></p>
+            <button type="submit" class="run">提取五分钟 RMSSD</button>
+          </form>
+          <div id="hrvStatus" class="status" role="status"></div>
+        </div>
+        <div id="hrvResult" class="result hide"></div>
+      </section>
       <section id="rawqc" class="tab-panel hide" role="tabpanel">
         <div class="card">
           <h2>原始 BDF 质控与 FIF 导出</h2>
@@ -567,15 +603,16 @@
               <summary>人工标记与电极装配（可以先留空，检视后再生成新版本）</summary>
               <p id="rawQcAutoDraftNotice" class="notice small hide" role="status"></p>
               <label for="rawQcBads"
-                >坏道草稿（请人工核对，可增删）：原始通道名，逗号或换行分隔</label
+                >整道排除草稿（仅整条通道不可用时填写）：通道名，逗号或换行分隔</label
               ><textarea id="rawQcBads" rows="2" placeholder="例如 Fp1, Fp2"></textarea>
               <label for="rawQcBadSegments"
-                >坏段草稿（请人工核对，可增删）：每行“开始秒,结束秒,原因”</label
+                >坏段标记草稿（保留波形，分析时忽略）：每行“开始秒,结束秒,原因”</label
               ><textarea
                 id="rawQcBadSegments"
                 rows="3"
                 placeholder="例如 12,18,movement"
               ></textarea>
+              <p class="muted small">整道排除只影响列出的通道；坏段只影响列出的时间窗（当前为全部通道共同跳过该时间窗）。局部问题不会让整条通道舍弃。应用标记保存为FIF后，单份、多份及镇痛前后分析请选择FIF，程序会自动忽略相应标记。</p>
               <label for="rawQcEyes">已确认的眼状态：每行“开始秒,结束秒,open或closed”</label
               ><textarea
                 id="rawQcEyes"
@@ -626,7 +663,7 @@
                 ><input id="patrolBin" type="number" min="1" max="120" value="2" />
               </div>
               <div>
-                <label for="patrolZ">相对异常阈值（小值更敏感）</label
+                <label for="patrolZ">可选阶跃：相对阈值（小值更敏感）</label
                 ><input id="patrolZ" type="number" min="3" max="12" value="6" />
               </div>
               <div>
@@ -637,6 +674,14 @@
                 </select>
               </div>
             </div>
+            <div class="row">
+              <label><input id="patrolCheckFlat" type="checkbox" checked /> 平线（默认）</label>
+              <label><input id="patrolCheckSaturation" type="checkbox" /> 数字饱和（仅标坏段）</label>
+              <label><input id="patrolCheckStep" type="checkbox" /> 持续电位阶跃（仅标坏段）</label>
+              <label for="patrolStepMin">阶跃最小变化（µV）</label>
+              <input id="patrolStepMin" type="number" min="1" max="1000000" value="100" style="width:100px" />
+            </div>
+            <p class="muted small">先只查平线。50/60Hz工频留在PSD中查看，不列为坏道；幅度偶尔升高或降低不再按旧“跳变”规则标红。可选阶跃须同时有明显突变及持续的前后电位差。</p>
             <div class="row">
               <button id="patrolAutoRed" type="button" class="warning-button run">
                 黄色按钮：自动红标并定位可疑通道/波形</button
@@ -654,7 +699,7 @@
               ><button id="patrolClearRed" type="button" class="secondary">清除候选红标</button>
             </div>
             <p class="muted small">
-              绿色按钮将本次全部扫描结果追加到上方草稿：持续性候选→坏道，短暂候选→坏段（导出时作用于全部通道）；保留已有内容，可手动增删，不填眼状态或电极映射，不自动导出。黄色按钮会扫描、红色提示并跳到首个候选，同时显示对应频域；红色候选不是已确认坏道。人工确认前不写BAD，不删数据。
+              绿色按钮区分整道与坏段：仅全程平线才填入整道排除；局部平线及勾选的饱和/阶跃只按实际区间标注坏段，通道的其他时间仍可用。即使80%时间窗有问题，也不直接舍弃整条通道。波形不裁剪，可人工增删；应用标记保存FIF后，分析跳过标记时段。
             </p>
             <div id="patrolStatus" class="status" role="status"></div>
             <p id="patrolCoverage" class="notice small">尚未登记人工复核；自动翻窗不计入进度。</p>
@@ -805,6 +850,24 @@
             ><button id="rawWaveExport" class="secondary run" type="button">只导出当前视图</button>
           </div>
           <p id="rawWaveInfo" class="muted small"></p>
+          <details id="qcReportPanel">
+            <summary>质控复核报告与论文案例</summary>
+            <p id="qcReportWindow" class="small muted">在波形区选择单个通道和时间窗。</p>
+            <label>当前案例的决定
+              <select id="qcReportDecision">
+                <option value="pending">待人工决定</option>
+                <option value="keep">保留</option>
+                <option value="exclude">排除</option>
+              </select>
+            </label>
+            <label>判断依据
+              <textarea id="qcReportNote" rows="3" maxlength="2000"
+                placeholder="例如说明工频峰、滤波后残留、单位核实或坏段判断"></textarea>
+            </label>
+            <button id="qcReportExport" type="button" class="secondary run" data-requires-result>导出质控复核报告</button>
+            <p id="qcReportStatus" class="small" role="status"></p>
+            <div id="qcReportLinks"></div>
+          </details>
           <div class="raw-wave-scroll">
             <canvas
               id="rawWaveCanvas"
@@ -908,6 +971,7 @@
     <script src="/assets/eeg_spike_ui.js"></script>
     <script src="/assets/eeg_session_ui.js"></script>
     <script src="/assets/eeg_result_explainer.js"></script>
+    <script src="/assets/eeg_hrv.js"></script>
     <script src="/assets/eeg_app.js"></script>
     <script src="/assets/eeg_view_axes.js"></script>
     <script src="/assets/eeg_patrol_math.js"></script>

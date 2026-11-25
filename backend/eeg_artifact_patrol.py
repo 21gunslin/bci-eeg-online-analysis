@@ -2,8 +2,9 @@
 
 Read-only triage for manual artifact review, not automatic rejection.
 
-Rules flag flat/rail, unusually large excursions/steps, baseline shifts and
-line-noise candidates. No filtering, interpolation, calibration correction,
+Flat lines are checked first. Saturation and sustained steps are optional
+review prompts. Line noise and ordinary voltage changes are not bad channels.
+No filtering, interpolation, calibration correction,
 Raw/FIF writes or diagnostic labels occur here.
 """
 
@@ -14,16 +15,50 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from eeg_mne_ops import welch_psd as welch
-
 from eeg_raw_bdf import NativeBDF
 
-VERSION = "patrol_v1"
-NOTICE = "候选仅用于优先定位，可能漏检或误报；未触发不代表无伪迹。不能自动确认眨眼、肌电或疾病。辅助通道本可包含尖峰或固定状态，不能直接当脑电伪迹。扫描不滤波、不删数据，不设置坏道/BAD注释。"
+VERSION = "patrol_v3_span_marks"
+NOTICE = "默认仅检查平线，工频不参与。绿色按钮仅把全程平线建议为整道坏道；局部平线及勾选的饱和/阶跃按实际区间标注坏段。全部样本保留，保存FIF后分析忽略BAD时段。候选仍需人工核对。"
+CHECKS = ("flat", "saturation", "step")
 
 
-def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg"):
-    """用平线、饱和、跳变、基线和工频规则寻找复核候选；规则触发不代表已确认坏道。"""
+def normalize_checks(value=None):
+    """只允许明确的检查项目；旧请求未传此项时，也默认只检查平线。"""
+    value = ["flat"] if value is None else value
+    if (not isinstance(value, (list, tuple)) or not value
+            or any(not isinstance(item, str) or item not in CHECKS for item in value)):
+        raise ValueError("至少选择一项检查：flat、saturation、step。")
+    return [name for name in CHECKS if name in value]
+
+
+def sustained_step(x, delta, fs, begin, end, threshold, minimum_change, sensitivity, quantum):
+    """单点尖峰、平滑起伏都不算阶跃；必须有突变，并保持前后电位差。
+
+    取边界前后各100毫秒，避开紧邻边界的10毫秒。用中位数排除偶发尖峰，
+    再要求前后电位差超过最小幅度及局部波动的稳健阈值。这只是复核线索。
+    """
+    context, guard = max(2, round(.1 * fs)), max(1, round(.01 * fs))
+    left, right = max(0, begin - 1), max(0, end - 1)
+    candidates = np.flatnonzero(delta[left:right] > threshold) + left + 1
+    for point in candidates:
+        if point < context or point + context > len(x):
+            continue
+        before, after = x[point-context:point-guard], x[point+guard:point+context]
+        if not len(before) or not len(after):
+            continue
+        a, b = float(np.median(before)), float(np.median(after))
+        background = 1.4826 * max(float(np.median(np.abs(before-a))),
+                                  float(np.median(np.abs(after-b))))
+        height = abs(b-a)
+        if height >= max(minimum_change, sensitivity * max(background, quantum)):
+            return float(point/fs), float(height)
+    return None
+
+
+def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg",
+                enabled_checks=None, step_min_uv=100.0):
+    """全程平线才建议整道排除；局部问题仅标时间段，保留其他正常时段。"""
+    enabled_checks = normalize_checks(enabled_checks)
     source = NativeBDF(path)
     if (
         not math.isfinite(seconds)
@@ -31,8 +66,9 @@ def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg"):
         or not math.isfinite(sensitivity)
         or not 3 <= sensitivity <= 12
         or scope not in ("eeg", "all")
+        or not math.isfinite(step_min_uv) or not 1 <= step_min_uv <= 1_000_000
     ):
-        raise ValueError("巡检分窗须1–120秒，阈值3–12，范围eeg/all。")
+        raise ValueError("巡检分窗须1–120秒，阈值3–12，阶跃下限1–1000000µV，范围eeg/all。")
     from eeg_raw_display import ordered_channels
 
     order = ordered_channels([r["name"] for r in source.signals], mapping)
@@ -87,58 +123,26 @@ def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg"):
             dstart = max(0, a - 1)
             differences = delta[dstart : max(dstart, b - 1)]
             max_step = float(differences.max()) if len(differences) else 0.0
-            step_time = (
-                (dstart + int(np.argmax(differences)) + 1) / fs if len(differences) else start
-            )
             peak_time = (a + int(np.argmax(np.abs(values - center)))) / fs
             reasons = []
             score = 0.0
             line_db = None
             line_fraction = None
-            if ptp <= quantum * 0.1:
+            if "flat" in enabled_checks and ptp <= quantum * 0.1:
                 reasons.append("平线")
                 score = max(score, 8.0)
-            if rail >= 0.01:
+            if "saturation" in enabled_checks and rail >= 0.01:
                 reasons.append("数字边界/饱和候选")
                 score = max(score, 9.0)
-            if max_step > jump_threshold:
-                reasons.append("瞬时跳变候选")
-                score = max(score, min(10.0, 5 + math.log10(max_step / jump_threshold)))
-                peak_time = step_time
-            if len(values) >= max(16, round(fs)) and fs >= 112 and ptp > 0:
-                n = min(len(values), max(16, round(2 * fs)))
-                f, p = welch(
-                    values, fs=fs, nperseg=n, noverlap=n // 2, window="hann", detrend=False
-                )
-                positive = f >= max(1.0, 2 * fs / n)
-                total = float(p[positive].sum())
-                tests = []
-                for hz in (50, 60):
-                    distance = np.abs(f - hz)
-                    band = distance <= max(1.0, fs / n)
-                    background = (distance >= 3) & (distance <= 6)
-                    if (
-                        f[-1] < hz + 6
-                        or not band.any()
-                        or not background.any()
-                        or np.median(p[background]) <= 0
-                        or total <= 0
-                    ):
-                        continue
-                    db = float(
-                        10
-                        * (
-                            np.log10(max(float(p[band].max()), 1e-300))
-                            - np.log10(np.median(p[background]))
-                        )
-                    )
-                    fraction = float(p[band].sum() / total)
-                    tests.append((db, fraction))
-                    if db >= 15 and fraction >= 0.2:
-                        reasons.append(f"{hz}Hz强工频候选")
-                        score = max(score, 6.0)
-                if tests:
-                    line_db, line_fraction = max(tests)
+            # 只对电压信号应用µV阈值。50/60Hz在PSD中查看，不参与坏道扫描。
+            step = None
+            if "step" in enabled_checks and row["scale"] is not None and max_step > max(jump_threshold, step_min_uv):
+                step = sustained_step(x, delta, fs, a, b,
+                    max(jump_threshold, step_min_uv), step_min_uv, sensitivity, quantum)
+                if step is not None:
+                    reasons.append("持续电位阶跃候选")
+                    score = max(score, 6.0)
+                    peak_time = step[0]
             current.append(
                 {
                     "channel": row["name"],
@@ -156,29 +160,11 @@ def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg"):
                     "jump_threshold": jump_threshold,
                     "line_db": line_db,
                     "line_fraction": line_fraction,
+                    "sustained_step_uv": step[1] if step is not None else None,
                     "focus_time": float(peak_time),
                 }
             )
         valid = [c for c in current if c["evaluable"]]
-        log_amp = np.array([math.log10(max(c["ptp"], quantum)) for c in valid])
-        log_med = float(np.median(log_amp))
-        log_mad = max(0.15, float(np.median(np.abs(log_amp - log_med))) * 1.4826)
-        centers = np.array([c["median"] for c in valid])
-        shifts = np.abs(np.diff(centers))
-        shift_med = float(np.median(shifts)) if len(shifts) else 0.0
-        shift_mad = float(np.median(np.abs(shifts - shift_med))) * 1.4826 if len(shifts) else 0.0
-        shift_floor = max(quantum, float(np.median([c["ptp"] for c in valid])) * 0.05)
-        for index, c in enumerate(valid):
-            z = (log_amp[index] - log_med) / log_mad
-            c["amplitude_robust_z"] = float(z)
-            if len(valid) >= 5 and z >= sensitivity:
-                c["reasons"].append("片段幅度离群候选")
-                c["score"] = max(c["score"], min(10.0, float(z)))
-            if index and abs(
-                c["median"] - valid[index - 1]["median"]
-            ) > shift_med + sensitivity * max(shift_mad, shift_floor):
-                c["reasons"].append("基线突变候选")
-                c["score"] = max(c["score"], 7.0)
         flags = defaultdict(list)
         for c in valid:
             for reason in c["reasons"]:
@@ -187,6 +173,9 @@ def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg"):
         persistent = []
         for reason, matches in flags.items():
             coverage = len(matches) / len(valid)
+            # 80%只是列表合并阈值，不能据此牺牲其余20%的有效脑电。
+            whole_channel = (reason == "平线" and len(matches) == len(current)
+                             and all(c["evaluable"] for c in current))
             groups = [matches] if coverage >= 0.8 else []
             if coverage >= 0.8:
                 persistent.append(reason)
@@ -197,9 +186,13 @@ def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg"):
                     else:
                         groups.append([cell])
             for group in groups:
-                worst = max(
-                    group, key=lambda c: c["max_step"] if reason == "瞬时跳变候选" else c["score"]
-                )
+                worst = max(group, key=lambda c: c["score"])
+                segments = []
+                for cell in group:
+                    if segments and abs(segments[-1]["end"] - cell["start"]) < 1e-9:
+                        segments[-1]["end"] = cell["end"]
+                    else:
+                        segments.append({"start": cell["start"], "end": cell["end"]})
                 candidates.append(
                     {
                         "channel": row["name"],
@@ -213,6 +206,10 @@ def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg"):
                         "windows": len(group),
                         "eeg": display["eeg"],
                         "region": display["region"],
+                        "draft_eligible": True,
+                        "whole_channel": whole_channel,
+                        "mark_kind": "channel" if whole_channel else "segment",
+                        "segments": segments,
                     }
                 )
         channel_summary.append(
@@ -234,6 +231,8 @@ def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg"):
         "seconds": seconds,
         "scope": scope,
         "sensitivity": sensitivity,
+        "enabled_checks": enabled_checks,
+        "step_min_uv": step_min_uv,
         "channels": channel_summary,
         "bins": bins,
         "cells": cells,
@@ -241,11 +240,11 @@ def scan_record(path, mapping, *, seconds=2.0, sensitivity=6.0, scope="eeg"):
         "rules": [
             "平线：峰峰值≤0.1个文件头标定量化步长。",
             "饱和候选：数字上下边界占比≥1%。",
-            "跳变：相邻样本差超过通道自身稳健背景，阈值=中位差+2×灵敏度×背景尺度。",
-            "幅度离群：通道内log10峰峰值稳健z≥灵敏度，至少5窗；MAD设0.15下限。",
-            "基线突变：相邻窗中位数差超过通道自身稳健背景。",
-            "工频：50/60Hz峰相对邻域≥15dB且占max(1Hz,2Δf)以上谱功率≥20%；不去均值，仅在统计分母跳过DC邻格。",
-            "同一原因触发≥80%时间窗时合并为持续性通道提示；未触发窗口仍需人工复核。",
+            f"本次启用：{', '.join(enabled_checks)}；默认只有flat（平线）。",
+            f"可选持续电位阶跃：单次采样变化须超过{step_min_uv:g}µV及通道稳健阈值，同时前后各100ms（避开边界10ms）的中位电位差也须超过幅度下限及局部稳健阈值；只提示复核。",
+            "工频及其谐波不进入候选或BAD草稿，保留原始PSD供查看；普通幅度起伏、单点尖峰和基线变化不按旧跳变规则标红。",
+            "绿色按钮：仅全程每一窗均平线才加入整道坏道；局部平线及勾选的饱和/阶跃只写BAD时段，波形和通道保留。",
+            "同一原因触发≥80%窗口只合并列表展示，不升级为整道坏道；按实际连续区间标坏段，间隙中的正常片段保留。",
         ],
     }
 
@@ -262,6 +261,8 @@ def export_scan(scan, directory):
                 "建议复核点_s": c["focus_time"],
                 "持续性提示": c["persistent"],
                 "触发窗口比例": c["fraction"],
+                "标记方式": "整道排除候选" if c["whole_channel"] else "仅标注坏段，保留通道",
+                "实际问题区间_s": json.dumps(c["segments"], ensure_ascii=False),
                 "说明": "候选，未自动设置坏道或删段",
             }
             for c in scan["candidates"]

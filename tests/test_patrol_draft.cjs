@@ -9,18 +9,19 @@ const fixture = () => ({
     { name: 'O1', eeg: true },
   ],
   candidates: [
-    { channel: 'Fp1', reason: '平线', persistent: true, start: 0, end: 20 },
+    { channel: 'Fp1', reason: '平线', persistent: true, start: 0, end: 20,
+      whole_channel:true, fraction:1, segments:[{start:0,end:20}] },
     { channel: 'Fp1', reason: '饱和候选', persistent: true, start: 0, end: 20 },
-    { channel: 'F3', reason: '跳变', persistent: false, start: 4, end: 6, focus_time: 5 },
-    { channel: 'O1', reason: '幅度离群', persistent: false, start: 4, end: 6, focus_time: 5 },
+    { channel: 'F3', reason: '平线', persistent: false, start: 4, end: 6, focus_time: 5 },
+    { channel: 'O1', reason: '平线', persistent: false, start: 4, end: 6, focus_time: 5 },
   ],
 });
 test('persistent channel prompts become names; transient bounds are exact and same-time reasons combined', () => {
   const d = M.buildDraft(fixture());
   assert.equal(d.badsText, 'Fp1');
   assert.match(d.segmentsText, /^4,6,待核候选_/);
-  assert.match(d.segmentsText, /F3:跳变/);
-  assert.match(d.segmentsText, /O1:幅度离群/);
+  assert.match(d.segmentsText, /F3:平线/);
+  assert.match(d.segmentsText, /O1:平线/);
   assert.equal(d.addedBads, 1);
   assert.equal(d.addedSegments, 1);
   assert.equal(d.allEegBad, false);
@@ -50,11 +51,11 @@ test('manual coverage prevents duplicate intervals and reason delimiters stay wi
   assert.equal(d.segmentsText.split(',').length, 3);
   assert.equal(d.segmentsText.split('\n').length, 1);
 });
-test('a local transient is still retained when its channel also has a persistent prompt', () => {
+test('a local flat is retained but a persistent line-noise prompt is ignored', () => {
   const scan = fixture();
   scan.candidates.push({ channel: 'F3', persistent: true, reason: '工频', start: 0, end: 20 });
   const d = M.buildDraft(scan);
-  assert.match(d.badsText, /F3/);
+  assert.doesNotMatch(d.badsText, /F3/);
   assert.match(d.segmentsText, /4,6/);
 });
 test('all EEG marked bad is reported, empty scan preserves manual entries', () => {
